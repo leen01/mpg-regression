@@ -1,2 +1,17 @@
-# mpg-regression
- Miles per gallon statistical analysis
+# Miles Per Gallon Analysis
+
+## Introduction 
+
+With recent world events, such as the war in Ukraine and supply chain disruptions, consumers have seen record high gas prices. Average gas prices in the US are “...on average at levels rarely seen in the last 50 years…” even when adjusting for inflation.\footnote{Koeze, Ella, and Clifford Krauss. “Why Gas Prices Are so High.” The New York Times, The New York Times, 14 June 2022, https://www.nytimes.com/interactive/2022/06/14/business/gas-prices.html} This has impacted consumer budgets across the country, and it is now more important than ever to have a fuel efficient vehicle. 
+
+While electric vehicles offer a way to reduce our collective dependence on gas, they remain niche products that comprise a small percentage of vehicle sales (4.6\%)\footnote{Blanco. "Electric Cars' Turning Point May Be Happening as U.S. Sales Numbers Start Climb." Car and Driver, 14 May 2022, https://www.caranddriver.com/news/a39998609/ev-sales-turning-point/} and which many consumers cannot afford. Therefore, it is important to understand factors that contribute to gas car’s mileage per gallon (MPG) as a measure of fuel efficiency.
+
+To this end, we model factors that contribute to a car’s MPG using data from the UCI Machine Learning Repository. We are keenly interested in the impact that a car’s engine displacement has on fuel efficiency as manufacturers have direct control over engine design. Common wisdom suggests that vehicles with high displacement are less fuel efficient than lower displacement vehicles (ex. trucks vs sedans). We find evidence of a statistically significant negative relationship, that is robust to alternative specifications, between engine displacement and MPG on the order of ~(0.09) MPG/cubic inch of engine displacement (10% decrease in the average car's displacement yielding a 1.19 to 2.73 MPG increase).
+
+## Data and Methodology
+
+Our study uses a dataset donated to the Statlib library at Carnegie Mellon University, collected in 1982 and used in the 1983 American Statistical Association (ASA) Exposition\footnote{Dua, D. and Graff, C. (2019). UCI Machine Learning Repository [http://archive.ics.uci.edu/ml]. Irvine, CA: University of California, School of Information and Computer Science.  (https://archive.ics.uci.edu/ml/datasets/Auto+MPG)}. Documentation for these data is limited and consequently we’ve relied on a letter from the ASA\footnote{Donoho, David and Ramos, Ernesto (1982), ``PRIMDATA: Data Sets for Use With PRIM-H'' http://lib.stat.cmu.edu/datasets/cars.desc}. Each row represents a car model sold in the years 1970 - 1982, with a total of 398 observations. Given the lack of sufficient documentation we can not confirm these data are observational.
+
+## Conclusion
+
+This study estimated the impact of a vehicle’s engine displacement on its fuel efficiency (MPG). For every cubic inch reduction of displacement to a vehicle’s engine, our models predict a 0.07 to 0.17 increase in MPG. Future research to refine these models could gather data on vehicle characteristics such as gear ratios/transmission types, aerodynamic ratings, and fuel and engine types. The aim of this work is to help car manufacturers determine which vehicle characteristics can be modified to best optimize a vehicle’s MPG, given the importance consumer’s place on fuel efficiency as they make purchasing decisions.

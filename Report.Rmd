@@ -1,0 +1,270 @@
+---
+title: "An Empirical Analysis of Vehicle Fuel Efficiency"
+author: "Nicholas Lee, Mike Varner, Zachary Galante, and Mark Herrera"
+date: "8/2/2022"
+output:
+  pdf_document
+header-includes:
+ \usepackage{wrapfig}
+ \usepackage{float}
+ \floatplacement{figure}{H}
+---
+
+```{r load packages and set options, include=FALSE}
+#clear environment
+gc(reset = TRUE); rm(list = ls())
+library(tidyverse)
+library(dplyr)
+library(car)
+library(caTools)
+library(patchwork)
+library(moments)
+library(lmtest)
+library(sandwich)
+library(stargazer)
+# for overview of data
+library(skimr) 
+#formatting options
+knitr::opts_chunk$set(echo = FALSE, dpi = 400, include=FALSE, warning=FALSE, message=FALSE)
+theme_set(theme_bw())
+```
+
+## Introduction 
+
+With recent world events, such as the war in Ukraine and supply chain disruptions, consumers have seen record high gas prices. Average gas prices in the US are “...on average at levels rarely seen in the last 50 years…” even when adjusting for inflation.\footnote{Koeze, Ella, and Clifford Krauss. “Why Gas Prices Are so High.” The New York Times, The New York Times, 14 June 2022, https://www.nytimes.com/interactive/2022/06/14/business/gas-prices.html} This has impacted consumer budgets across the country, and it is now more important than ever to have a fuel efficient vehicle. 
+
+While electric vehicles offer a way to reduce our collective dependence on gas, they remain niche products that comprise a small percentage of vehicle sales (4.6\%)\footnote{Blanco. "Electric Cars' Turning Point May Be Happening as U.S. Sales Numbers Start Climb." Car and Driver, 14 May 2022, https://www.caranddriver.com/news/a39998609/ev-sales-turning-point/} and which many consumers cannot afford. Therefore, it is important to understand factors that contribute to gas car’s mileage per gallon (MPG) as a measure of fuel efficiency.
+
+To this end, we model factors that contribute to a car’s MPG using data from the UCI Machine Learning Repository. We are keenly interested in the impact that a car’s engine displacement has on fuel efficiency as manufacturers have direct control over engine design. Common wisdom suggests that vehicles with high displacement are less fuel efficient than lower displacement vehicles (ex. trucks vs sedans). We find evidence of a statistically significant negative relationship, that is robust to alternative specifications, between engine displacement and MPG on the order of ~(0.09) MPG/cubic inch of engine displacement (10% decrease in the average car's displacement yielding a 1.19 to 2.73 MPG increase).
+
+## Data and Methodology
+
+Our study uses a dataset donated to the Statlib library at Carnegie Mellon University, collected in 1982 and used in the 1983 American Statistical Association (ASA) Exposition\footnote{Dua, D. and Graff, C. (2019). UCI Machine Learning Repository [http://archive.ics.uci.edu/ml]. Irvine, CA: University of California, School of Information and Computer Science.  (https://archive.ics.uci.edu/ml/datasets/Auto+MPG)}. Documentation for these data is limited and consequently we’ve relied on a letter from the ASA\footnote{Donoho, David and Ramos, Ernesto (1982), ``PRIMDATA: Data Sets for Use With PRIM-H'' http://lib.stat.cmu.edu/datasets/cars.desc}. Each row represents a car model sold in the years 1970 - 1982, with a total of 398 observations. Given the lack of sufficient documentation we can not confirm these data are observational.
+
+```{r load data set,include=FALSE}
+df <- read.table("https://archive.ics.uci.edu/ml/machine-learning-databases/auto-mpg/auto-mpg.data")
+# Change column names to match source: 
+names(df) <- c('mpg', 'cylinders', 'displacement', 'horsepower', 'weight', 'acceleration', 'model_year', 'origin', 'car_name')
+```
+
+We cleaned the data by removing 6 observations with missing values for horsepower. Additionally, we removed cars with multiple entries from different model years, keeping only the most recent year's model. This was done to address potential temporal effects of having the same car model repeated in our sampling. Ultimately, these efforts reduced our observations from 398 to 302. Given our data has over 100 points, we feel it appropriate to use the large sample assumptions for OLS as opposed to the classic linear model assumptions.
+
+We then performed all exploration and model building on a 33\% sample of the data. The remaining 67\% was used to generate the statistics in this report.
+
+```{r clean up, include=FALSE}
+# Horsepower cleanup
+print("-- Summary before replacement --")
+summary(df['horsepower'])
+
+# replace all question marks in horsepower
+strrep("-", 20)
+print(paste("Number of ?'s: ", length(df['horsepower'][df['horsepower'] == "?"]))) # should equal six according to documentation
+
+df['horsepower'][df['horsepower'] == "?"] <- NA
+df <- df[!is.na(df$horsepower), ]
+df['horsepower'] <- as.double(as.character(df$horsepower))
+
+#logged version of horsepower
+df['log_hp'] <- log(df$horsepower)
+
+#horsepower per cylinder
+df['horsepower_cylinder'] = df$horsepower/df$cylinders
+
+#horsepower per weight
+df['horsepower_weight'] = df$horsepower/df$weight
+
+#weight per cylinder
+df['weight_cylinder'] = df$weight/df$cylinders
+
+#squared term for displacement
+df['displacement_sq'] = df$displacement^2
+
+strrep("-", 20)
+print(paste("-- Summary after replacement --"))
+summary(df['horsepower'])
+
+# dropping origin because it's categorical nature, indicating whether the car is from the US, Japan, or Canada
+df <- subset(df, select = -c(origin))
+```
+
+```{r filter and split, include=FALSE}
+# select most recent version of each car to remove temporal connection
+df_final <- df %>% group_by(car_name) %>%
+  filter(model_year == max(model_year, na.rm=TRUE) & !is.na(horsepower))
+
+# create ID column for train/test split
+df_final$id <- 1:nrow(df_final)
+
+# create train & test dataframes (train = 1/3)
+set.seed(3093)
+sample <- sample.split(df_final$id, SplitRatio = 0.333)
+train  <- subset(df_final, sample == TRUE)
+test   <- subset(df_final, sample == FALSE)
+```
+
+```{r skim train df, include=FALSE}
+skim(train)
+```
+We focus on displacement as our variable of influence because it is a physical attribute of cars that manufactures could directly alter to change fuel efficiency, in the hopes of driving consumer demand. Initial exploratory plots for displacement suggest a negative relationship between displacement and MPG. This leads us to build regressions in the general form $$\widehat{MPG}=\beta_0 - \beta_1\cdot displacement - \mathbf{Z\gamma}$$
+where $\beta_1$ represents the decrease in MPG per unit of displacement, $\mathbf{Z}$ is a row vector of additional covariates, and $\mathbf{\gamma}$ is a column vector of coefficients.
+
+Exploratory plots show similar negative relationship between cylinders and MPG, however as displacement is typically a calculation that includes number of cylinders as a variable, we exclude cylinders from models assuming its collinearity with displacement will be problematically high. Thus we can use displacement as an encompassing variable for number of cylinders. 
+
+```{r initial graph of relationships, include=TRUE, fig.cap = "MPG vs. Displacement", fig.height = 3.5, fig.width = 6.5}
+ggplot(data = df , aes(x = displacement, y = mpg)) +
+  geom_point(pch = 21) +
+  labs(
+    x = 'Displacement (cubic inches)',
+    y = 'MPG',
+    title = 'MPG v. Displacement'
+  ) + theme(plot.title = element_text(hjust = 0.5, face = 'bold', size = 20),
+            axis.title.x = element_text(size = 16, face = 'bold'),
+            axis.title.y = element_text(size = 16, face = 'bold'),
+            axis.text.x = element_text(size = 15),
+            axis.text.y = element_text(size = 15))
+```
+
+```{r scatterplots of all variables, include=FALSE}
+for (i in colnames(df)){
+  g <- ggplot(data = train) + aes(x = get(i), y = mpg) +
+  geom_point() + 
+    labs(
+      x = i,
+      y = 'MPG', 
+      title = paste('MGP v.', i)
+    )
+  print(g)
+}
+```
+
+```{r}
+hist_eda <- function(dataset, c, bins = 30) {
+  g <- ggplot(data = dataset) +
+    aes(x = get(c), na.rm = TRUE) +
+    geom_histogram(bins = bins, aes(y = ..density..)) +
+    labs(title = paste('Distribution of ', c),
+         x = c) +
+    geom_density() + 
+    theme(plot.title = element_text(hjust = 0.5))
+  print(g)
+}
+
+hist_eda(train, 'displacement')
+hist_eda(train, 'mpg')
+```
+
+We note that the scatterplot of MPG and displacement shows a slight curve, akin to a wide upward parabola, in the negative relationship, which we address by incorporating a squared term for displacement in some of our models.
+
+## Results
+
+```{r model 1, include=FALSE}
+model_1 <- lm(mpg ~ displacement, data = test)
+se_1 <- model_1 %>% vcovHC(type = "HC1") %>% diag() %>% sqrt()
+```
+
+```{r model 1 exploration, include=FALSE}
+plot(model_1)
+```
+
+```{r model 2}
+model_2 <- lm(mpg ~ displacement + displacement_sq, data = test)
+se_2 <- model_2 %>% vcovHC(type = "HC1") %>% diag() %>% sqrt()
+```
+
+```{r}
+model_3 <- lm(mpg ~ displacement + displacement_sq + weight, data = test)
+se_3 <- model_3%>% vcovHC(type = "HC1") %>% diag() %>% sqrt()
+```
+
+```{r}
+model_4 <- lm(mpg ~ displacement + displacement_sq + weight + acceleration + model_year, data = test)
+se_4 <- model_4%>% vcovHC(type = "HC1") %>% diag() %>% sqrt()
+```
+
+```{r}
+min_displacement_coef <- min(model_1$coef[2], model_2$coef[2], model_3$coef[2], model_4$coef[2])
+max_displacement_coef <- max(model_1$coef[2], model_2$coef[2], model_3$coef[2], model_4$coef[2])
+avg_displacement <- mean(test$displacement)
+```
+
+
+The Table 1 below shows the results of four regression models. Across all models, the key coefficients for $displacement$ were highly statistically significant. Point estimates ranged from `r min_displacement_coef %>% sprintf(fmt = '%#.2f')` to `r max_displacement_coef %>% sprintf(fmt = '%#.2f')`. To put this into context, this estimates that for a vehicle with a displacement equal to the average for the dataset (`r round(avg_displacement,2)` cubic inches), a 10\% decrease in displacement would increase fuel efficiency by `r abs(round(max_displacement_coef * avg_displacement * 0.1, 2))` to `r abs(round(min_displacement_coef * avg_displacement * 0.1, 2))` $MPG$ or `r abs(round((max_displacement_coef * avg_displacement * 0.1 / mean(test$mpg)), 2))*100 `\% to `r abs(round((min_displacement_coef * avg_displacement * 0.1 / mean(test$mpg)), 2))*100 `\% of the mean $MPG$ (`r round(mean(test$mpg),2)`) holding everything else constant. From our perspective, this is a practically significant effect, as such an increase in fuel efficiency would result in significant cost savings on gas over the lifetime of car ownership. 
+
+```{r stargazer table, include=TRUE, results='asis'}
+stargazer(model_1, model_2, model_3, model_4, 
+          type = 'latex', single.row = FALSE, table.placement = "H", style = "default",
+          title = 'Summary Statistics of Models', 
+          dep.var.labels = "Miles Per Gallon (MPG)",
+          se = list(se_1, se_2, se_3, se_4),
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          omit.stat=c("adj.rsq","f"), digits=2,
+          header=FALSE, font.size = "small", column.sep.width = "1pt",
+          covariate.labels = c('Displacement (cubic inches)', 'Displacement (cubic inches) squared', 'Horsepower', 'Weight',
+                               'Acceleration', 'Model Year'),
+          notes = "\\parbox[t]{.55\\textwidth}{$HC_1$ robust standard errors in parentheses.}", notes.align='l'
+)
+```
+
+```{r}
+attr(test, 'model.varnames') <- c('MPG', 'Cylinders', 'Displacement (cubic inches)', 'Horsepower', 'Acceleration', 'Model Year', 'Car Name')
+```
+
+
+We note that in Model 2, adding in the squared version of displacement ($displacement\_sq$) increases both the magnitude of the $displacement$ coefficient and the explanatory power of the model while also being highly statistically significant in its own right. In Model 3, adding $weight$ gives the model a similar increase in explanatory power as well as another highly statistically significant variable. Lastly, in Model 4, we see our only statistically insignificant coefficient ($acceleration$) as well as our strongest effect ($model\_year$) and our biggest increase in explanatory power. Finding a statistically significant positive coefficient for $model\_year$ supports the theory that cars have tended to become more efficient over time via technological advancement.
+
+## Limitations
+
+Consistent regression estimates require that the data used are independent and identically distributed (IID). Car manufacturers that have multiple models in the dataset may introduce clustering effects, due to similarity in materials or production methods, which could influence our outcome variable (MPG).
+
+The other assumption we need to demonstrate is that the best linear predictor (BLP) is unique and we have met this by verifying that our variables have finite variances: $MPG$ (`r var(test$mpg) %>% sprintf(fmt = '%#.1f')`), $displacement$ (`r var(test$displacement) %>% sprintf(fmt = '%#.1f')`), $weight$ (`r var(test$weight) %>% sprintf(fmt = '%#.1f')`), and $acceleration$ (`r var(test$acceleration) %>% sprintf(fmt = '%#.1f')`). We believe these variables do not have infinite variance as they are the result of physical processes and car manufactures are unlikely to manufacture models of car that are well beyond the norm. Cars can't have infinitely large displacements or MPG and acceleration is bounded at zero. 
+
+Additionally, while we attempted to account for temporal effects by eliminating repeat model entries from different years, we must note that newer cars appear to have a distinct advantage in fuel efficiency. As fuel efficiency is likely to improve over time across all vehicle manufacturing, we suggest future study which uses methods to account for this effect, such as a survey of cars at a single point in time.
+
+```{r MPG v displacement with color, fig.cap = "MPG vs. Displacement", fig.height = 3.5, fig.width = 6.5}
+g <- ggplot(data = df , aes(x = displacement, y = mpg, color=model_year)) +
+  geom_point(pch = 19) +
+  labs(
+    x = 'Displacement (cubic inches)',
+    y = 'MPG',
+    title = 'MPG v. Displacement', 
+    color = 'Model Year'
+  ) + theme(plot.title = element_text(hjust = 0.5, face = 'bold', size = 20),
+            axis.title.x = element_text(size = 16, face = 'bold'),
+            axis.title.y = element_text(size = 16, face = 'bold'),
+            axis.text.x = element_text(size = 15),
+            axis.text.y = element_text(size = 15), 
+            legend.position = 'right') +
+  scale_color_continuous(
+    breaks = c(
+      min(train$model_year), 
+      min(train$model_year) + 3,
+      median(train$model_year),
+      median(train$model_year) + 3,
+      max(train$model_year)
+    )
+  ) 
+g
+```
+
+We must also note omitted variables and their potential biases. One example is the number of gears in the engine transmission - the basic system that turns engine revolutions into tire rotations, where gears can multiply the work the engine does to make it more efficient. This likely has a positive relationship with fuel efficiency, and a negative one with displacement, leading our model to be underpredictive of fuel efficiency. Another example is a car's aerodynamic rating. Aerodyndamics has a positive relationship with fuel efficiency, but an unknown relationship with displacement. We reason that cars with both low displacement (a small sedan) and high displacement (sports cars) might be designed to minimize air resistance, and therefore omitting it could make our models under or overpredictive of fuel efficiency.
+
+Additionally, we lack information on a number of mechanisms such as fuel injection, engine type, type of gas used, cooling system, method of governing and valve arrangement, all of which likely contribute to a vehicle's fuel efficiency.
+
+While exploring our data, we observed what appeared to be two subgroups of cars when looking at displacement and horsepower. We hypothesize that car manufacturers may specifically design cars for two groups of consumers - those more concerned with engine efficiency (i.e. sedan drivers) versus those more concerned with engine power (i.e. truck/SUV drivers). This is another limitation to our model as we do not have a way to control for these vehicle types.
+
+To evaluate multicolinearity within our models, we conducted VIF tests and found high (>4) VIF values for $displacement$, $displacement\_sq$, and $weight$. We've attempted to mitigate multicolinearity by removing cylinders and horsepower from the models, but this is still a deficiency. We also introduced some multicolineary by adding in a squared version of $displacement$, but we felt this was worthwhile given we observed a non-linear relationship with MPG, but we did consider using a logged version as well.
+
+```{r VIFs}
+vif(model_2)
+#vif(model_2) > 4
+
+vif(model_3)
+#vif(model_3) > 4
+
+vif(model_4)
+#vif(model_4) > 4
+```
+
+## Conclusion
+
+This study estimated the impact of a vehicle’s engine displacement on its fuel efficiency (MPG). For every cubic inch reduction of displacement to a vehicle’s engine, our models predict a `r abs(max_displacement_coef) %>% sprintf(fmt = '%#.2f')` to `r abs(min_displacement_coef) %>% sprintf(fmt = '%#.2f')` increase in MPG. Future research to refine these models could gather data on vehicle characteristics such as gear ratios/transmission types, aerodynamic ratings, and fuel and engine types. The aim of this work is to help car manufacturers determine which vehicle characteristics can be modified to best optimize a vehicle’s MPG, given the importance consumer’s place on fuel efficiency as they make purchasing decisions.
